@@ -273,6 +273,7 @@ impl UdpRx {
                 let store_pkt = StoredPacket {
                     packet: packet.freeze(),
                     decrypted,
+                    payload_end_pad: rtp_body_tail,
                 };
                 let packet = store_pkt.packet.clone();
                 entry.store_packet(store_pkt, &self.config);

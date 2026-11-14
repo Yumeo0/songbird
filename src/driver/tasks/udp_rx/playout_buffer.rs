@@ -8,6 +8,8 @@ pub struct StoredPacket {
     pub packet: Bytes,
     // We need to store this as it's possible that a user can change config modes.
     pub decrypted: bool,
+    // DAVE decryption can leave a shorter payload inside the transport envelope.
+    pub payload_end_pad: usize,
 }
 
 /// Determines whether an SSRC's packets should be decoded.

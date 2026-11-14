@@ -23,6 +23,91 @@ pub struct SsrcState {
     channels: Channels,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use discortp::rtp::{MutableRtpPacket, RtpType};
+    use opus2::{Application, Channels, Encoder};
+    use std::num::NonZeroU8;
+
+    fn check_payload_bounds(extension_words: Option<u16>, dave_overhead: usize) {
+        // Force CELT, whose end-of-frame data is corrupted by stale DAVE bytes.
+        let mut encoder = Encoder::new(48000, Channels::Stereo, Application::LowDelay).unwrap();
+        let tone: Vec<f32> = (0..960)
+            .flat_map(|i| {
+                let sample = (std::f32::consts::TAU * 440.0 * i as f32 / 48000.0).sin() * 0.2;
+                [sample, sample]
+            })
+            .collect();
+        let mut opus = vec![0; 4000];
+        let len = encoder.encode_float(&tone, &mut opus).unwrap();
+        opus.truncate(len);
+        let mut expected = vec![0_i16; 1920];
+        OpusDecoder::new(48000, Channels::Stereo)
+            .unwrap()
+            .decode(&opus, &mut expected, false)
+            .unwrap();
+
+        let crypto_mode = CryptoMode::Aes256Gcm;
+        let trailer = crypto_mode.payload_suffix_len() + dave_overhead;
+        let extension_len = extension_words.map_or(0, |words| 4 + usize::from(words) * 4);
+        let mut bytes = vec![0_u8; 12 + extension_len + opus.len() + trailer];
+        let mut rtp = MutableRtpPacket::new(&mut bytes).unwrap();
+        rtp.set_version(2);
+        rtp.set_extension(u8::from(extension_words.is_some()));
+        rtp.set_payload_type(RtpType::Dynamic(120));
+        rtp.set_sequence(1.into());
+        rtp.set_timestamp(960.into());
+        rtp.set_ssrc(7);
+        let payload = rtp.payload_mut();
+        if let Some(words) = extension_words {
+            payload[..2].copy_from_slice(&0xBEDE_u16.to_be_bytes());
+            payload[2..4].copy_from_slice(&words.to_be_bytes());
+        }
+        payload[extension_len..extension_len + opus.len()].copy_from_slice(&opus);
+        // In-place decryption overwrites the Opus frame but leaves the rest of
+        // the old DAVE envelope and transport trailer in the packet allocation.
+        payload[extension_len + opus.len()..].fill(0xAA);
+
+        let config = Config::default()
+            .decode_mode(DecodeMode::Decode(Default::default()))
+            .playout_buffer_length(NonZeroU8::new(1).unwrap());
+        let mut state = SsrcState::new(&rtp.to_immutable(), crypto_mode, &config);
+        state.store_packet(
+            StoredPacket {
+                packet: Bytes::from(bytes),
+                decrypted: true,
+                payload_end_pad: trailer,
+            },
+            &config,
+        );
+        let decoded = state.get_voice_tick(&config).unwrap().unwrap();
+        assert_eq!(
+            decoded.decoded_voice.unwrap(),
+            expected,
+            "extension_words={extension_words:?}, dave_overhead={dave_overhead}"
+        );
+        assert_eq!(decoded.packet.unwrap().payload_end_pad, trailer);
+    }
+
+    #[test]
+    fn dave_payload_bounds_survive_playout() {
+        for extension_words in [None, Some(0), Some(1), Some(4)] {
+            for dave_overhead in [11, 17, 37] {
+                check_payload_bounds(extension_words, dave_overhead);
+            }
+        }
+    }
+
+    #[test]
+    fn transport_only_payload_bounds_survive_playout() {
+        for extension_words in [None, Some(0), Some(1), Some(4)] {
+            check_payload_bounds(extension_words, 0);
+        }
+    }
+}
+
 impl SsrcState {
     pub fn new(pkt: &RtpPacket<'_>, crypto_mode: CryptoMode, config: &Config) -> Self {
         let playout_capacity = config.playout_buffer_length.get() + config.playout_spike_length;
@@ -66,7 +151,7 @@ impl SsrcState {
         // different cases: null packet who we want to decode as a miss, and packet who we must ignore temporarily.
         let m_pkt = self.playout_buffer.fetch_packet(config);
         let pkt = match m_pkt {
-            PacketLookup::Packet(StoredPacket { packet, decrypted }) => Some((packet, decrypted)),
+            PacketLookup::Packet(packet) => Some(packet),
             PacketLookup::MissedPacket => None,
             PacketLookup::Filling => return Ok(None),
         };
@@ -77,13 +162,18 @@ impl SsrcState {
         };
 
         let should_decode = config.decode_mode.should_decode();
-        if let Some((packet, decrypted)) = pkt {
+        if let Some(StoredPacket {
+            packet,
+            decrypted,
+            payload_end_pad,
+        }) = pkt
+        {
             let rtp = RtpPacket::new(&packet).unwrap();
             let extensions = rtp.get_extension() != 0;
 
             let payload = rtp.payload();
             let payload_offset = self.crypto_mode.payload_prefix_len();
-            let payload_end_pad = payload.len() - self.crypto_mode.payload_suffix_len();
+            let payload_end = payload.len() - payload_end_pad;
 
             // We still need to compute missed packets here in case of long loss chains or similar.
             // This occurs due to the fallback in 'store_packet' (i.e., empty buffer and massive seq difference).
@@ -93,7 +183,7 @@ impl SsrcState {
 
             // TODO: maybe hand over audio and extension indices alongside packet?
             let (audio, _packet_size) = self.scan_and_decode(
-                &payload[payload_offset..payload_end_pad],
+                &payload[payload_offset..payload_end],
                 extensions,
                 missed_packets,
                 should_decode && decrypted,
