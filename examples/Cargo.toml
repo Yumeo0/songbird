@@ -12,13 +12,12 @@ resolver = "2"
 reqwest = "0.13"
 serenity = { features = [
     "cache",
-    "framework",
     "voice",
     "http",
     "rustls_backend",
 ], git = "https://github.com/serenity-rs/serenity", branch = "next" }
 songbird = { path = "../", version = "0.6", default-features = false }
-symphonia = { features = ["aac", "mp3", "isomp4", "alac"], version = "0.5.2" }
+symphonia = { features = ["aac", "mp3", "isomp4", "alac"], version = "0.6.1" }
 tokio = { features = [
     "macros",
     "rt-multi-thread",

@@ -28,7 +28,7 @@ use songbird::{
 };
 use std::{collections::HashMap, env, error::Error, future::Future, sync::Arc};
 use tokio::sync::RwLock;
-use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, StreamExt as _};
+use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt as _};
 use twilight_http::Client as HttpClient;
 use twilight_model::{
     channel::Message,
@@ -75,10 +75,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
             Intents::GUILD_MESSAGES | Intents::GUILD_VOICE_STATES | Intents::MESSAGE_CONTENT;
         let config = twilight_gateway::Config::new(token.clone(), intents);
 
-        let shards: Vec<Shard> =
-            twilight_gateway::create_recommended(&http, config, |_, builder| builder.build())
-                .await?
-                .collect();
+        let recommended = http.gateway().authed().await?.model().await?;
+        let shards: Vec<Shard> = (0..recommended.shards)
+            .map(|number| {
+                Shard::with_config(ShardId::new(number, recommended.shards), config.clone())
+            })
+            .collect();
 
         let senders = TwilightMap::new(
             shards
@@ -140,13 +142,13 @@ async fn handle_event(event: Event, state: Arc<StateRef>) {
         }
 
         match msg.content.splitn(2, ' ').next() {
-            Some("!join") => spawn(join(msg.0, Arc::clone(&state))),
-            Some("!leave") => spawn(leave(msg.0, Arc::clone(&state))),
-            Some("!pause") => spawn(pause(msg.0, Arc::clone(&state))),
-            Some("!play") => spawn(play(msg.0, Arc::clone(&state))),
-            Some("!seek") => spawn(seek(msg.0, Arc::clone(&state))),
-            Some("!stop") => spawn(stop(msg.0, Arc::clone(&state))),
-            Some("!volume") => spawn(volume(msg.0, Arc::clone(&state))),
+            Some("!join") => spawn(join(msg.message, Arc::clone(&state))),
+            Some("!leave") => spawn(leave(msg.message, Arc::clone(&state))),
+            Some("!pause") => spawn(pause(msg.message, Arc::clone(&state))),
+            Some("!play") => spawn(play(msg.message, Arc::clone(&state))),
+            Some("!seek") => spawn(seek(msg.message, Arc::clone(&state))),
+            Some("!stop") => spawn(stop(msg.message, Arc::clone(&state))),
+            Some("!volume") => spawn(volume(msg.message, Arc::clone(&state))),
             _ => return,
         }
     }

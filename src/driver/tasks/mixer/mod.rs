@@ -632,7 +632,7 @@ impl Mixer {
 
         if conn.dave_protocol_version.load(Ordering::Relaxed) != 0 {
             if let Some(ref mut dave_session) = *conn.dave_session.write().unwrap() {
-                if dave_session.is_ready() {
+                if dave_session.can_encrypt() {
                     let encrypted = dave_session
                         .encrypt_opus(
                             &payload[first_payload_byte..first_payload_byte + payload_len],

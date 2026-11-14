@@ -319,8 +319,11 @@ impl From<&Cipher> for EncryptionAlgorithm {
 }
 
 #[derive(Clone)]
+/// Cipher used to encrypt and decrypt Discord voice transport packets.
 pub enum Cipher {
+    /// XChaCha20-Poly1305 transport encryption.
     XChaCha20Poly1305(XChaCha20Poly1305),
+    /// AES-256-GCM transport encryption.
     Aes256Gcm(Box<Aes256Gcm>),
 }
 

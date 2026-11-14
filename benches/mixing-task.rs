@@ -1,36 +1,7 @@
-use std::error::Error;
-
-use criterion::{
-    black_box,
-    criterion_group,
-    criterion_main,
-    BatchSize,
-    Bencher,
-    BenchmarkId,
-    Criterion,
-};
-use flume::{Receiver, Sender, TryRecvError};
-use songbird::{
-    constants::*,
-    driver::{
-        bench_internals::{
-            self,
-            mixer::{state::InputState, Mixer},
-            scheduler::*,
-            task_message::*,
-            CryptoState,
-        },
-        Bitrate,
-        DummyMixer,
-        Listeners,
-        MockScheduler,
-    },
-    input::{cached::Compressed, codecs::*, Input, RawAdapter},
-    tracks,
-    Config,
-};
-use std::{io::Cursor, net::UdpSocket, sync::Arc};
-use tokio::runtime::{Handle, Runtime};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use songbird::driver::{bench_internals::mixer::Mixer, MockScheduler};
+use std::hint::black_box;
+use tokio::runtime::Runtime;
 fn no_passthrough(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
@@ -166,7 +137,7 @@ fn passthrough(c: &mut Criterion) {
             || {
                 black_box(MockScheduler::from_mixers(
                     None,
-                    vec![Mixer::test_with_opus(rt.handle().clone())],
+                    vec![Mixer::test_with_opus(rt.handle())],
                 ))
             },
             |input| {
@@ -180,7 +151,7 @@ fn passthrough(c: &mut Criterion) {
             || {
                 black_box(MockScheduler::from_mixers(
                     None,
-                    vec![Mixer::test_with_opus(rt.handle().clone())],
+                    vec![Mixer::test_with_opus(rt.handle())],
                 ))
             },
             |input| {
@@ -213,7 +184,7 @@ fn passthrough_multimix(c: &mut Criterion) {
                         black_box(MockScheduler::from_mixers(
                             None,
                             (0..N_MIXERS)
-                                .map(|_| Mixer::test_with_opus(rt.handle().clone()))
+                                .map(|_| Mixer::test_with_opus(rt.handle()))
                                 .collect(),
                         ))
                     },
@@ -233,7 +204,7 @@ fn passthrough_multimix(c: &mut Criterion) {
                         black_box(MockScheduler::from_mixers(
                             None,
                             (0..N_MIXERS)
-                                .map(|_| Mixer::test_with_opus(rt.handle().clone()))
+                                .map(|_| Mixer::test_with_opus(rt.handle()))
                                 .collect(),
                         ))
                     },
@@ -283,7 +254,7 @@ fn task_culling(c: &mut Criterion) {
                 black_box(MockScheduler::from_mixers(
                     None,
                     (0..N_MIXERS)
-                        .map(|_| Mixer::test_with_opus(rt.handle().clone()))
+                        .map(|_| Mixer::test_with_opus(rt.handle()))
                         .collect(),
                 ))
             },
@@ -300,7 +271,7 @@ fn task_culling(c: &mut Criterion) {
                 black_box(MockScheduler::from_mixers(
                     None,
                     (0..N_MIXERS)
-                        .map(|_| Mixer::test_with_opus(rt.handle().clone()))
+                        .map(|_| Mixer::test_with_opus(rt.handle()))
                         .collect(),
                 ))
             },
@@ -322,7 +293,7 @@ fn task_culling(c: &mut Criterion) {
                 black_box(MockScheduler::from_mixers(
                     None,
                     (0..N_MIXERS)
-                        .map(|_| Mixer::test_with_opus(rt.handle().clone()))
+                        .map(|_| Mixer::test_with_opus(rt.handle()))
                         .collect(),
                 ))
             },

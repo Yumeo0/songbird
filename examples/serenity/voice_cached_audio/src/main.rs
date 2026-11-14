@@ -1,32 +1,22 @@
 //! Example demonstrating how to store and convert audio streams which you
 //! either want to reuse between servers, or to seek/loop on. See `join`, and `ting`.
 //!
-//! Requires the "cache", "standard_framework", and "voice" features be enabled in your
+//! Requires the "cache", "gateway", and "voice" features be enabled in your
 //! Cargo.toml, like so:
 //!
 //! ```toml
 //! [dependencies.serenity]
 //! git = "https://github.com/serenity-rs/serenity.git"
-//! features = ["cache", "framework", "standard_framework", "voice"]
+//! branch = "next"
+//! features = ["gateway", "cache", "voice"]
 //! ```
-use std::{
-    env,
-    sync::{Arc, Weak},
-};
+use std::sync::{Arc, Weak};
 
+use serenity::all::{FullEvent, Token};
 use serenity::{
     async_trait,
-    client::{Client, Context, EventHandler},
-    framework::{
-        standard::{
-            macros::{command, group},
-            Args,
-            CommandResult,
-            Configuration,
-        },
-        StandardFramework,
-    },
-    model::{channel::Message, gateway::Ready},
+    gateway::client::{Client, Context, EventHandler},
+    model::channel::Message,
     prelude::{GatewayIntents, Mentionable, Mutex},
     Result as SerenityResult,
 };
@@ -47,10 +37,46 @@ use songbird::{
 
 struct Handler;
 
+type CommandResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
 #[async_trait]
 impl EventHandler for Handler {
-    async fn ready(&self, _: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+    async fn dispatch(&self, ctx: &Context, event: &FullEvent) {
+        match event {
+            FullEvent::Ready { data_about_bot, .. } => {
+                println!("{} is connected!", data_about_bot.user.name);
+            },
+            FullEvent::Message {
+                new_message: msg, ..
+            } => {
+                if msg.author.bot() {
+                    return;
+                }
+                let Some(content) = msg.content.strip_prefix('~') else {
+                    return;
+                };
+                let (command, _args) = content
+                    .split_once(char::is_whitespace)
+                    .unwrap_or((content, ""));
+                if msg.guild_id.is_none() && command != "ping" {
+                    return;
+                }
+                let result = match command {
+                    "deafen" => deafen(ctx, msg).await,
+                    "join" => join(ctx, msg).await,
+                    "leave" => leave(ctx, msg).await,
+                    "mute" => mute(ctx, msg).await,
+                    "ting" => ting(ctx, msg).await,
+                    "undeafen" => undeafen(ctx, msg).await,
+                    "unmute" => unmute(ctx, msg).await,
+                    _ => return,
+                };
+                if let Err(error) = result {
+                    eprintln!("Command {command} failed: {error}");
+                }
+            },
+            _ => {},
+        }
     }
 }
 
@@ -73,10 +99,6 @@ struct UserData {
     songbird: Arc<songbird::Songbird>,
     sound_store: dashmap::DashMap<String, CachedSound>,
 }
-
-#[group]
-#[commands(deafen, join, leave, mute, ting, undeafen, unmute)]
-struct General;
 
 async fn setup_cached_audio() -> dashmap::DashMap<String, CachedSound> {
     // Loading the audio ahead of time.
@@ -109,7 +131,7 @@ async fn setup_cached_audio() -> dashmap::DashMap<String, CachedSound> {
     // Music by Cloudkicker, used under CC BY-SC-SA 3.0 (https://creativecommons.org/licenses/by-nc-sa/3.0/).
     let song_src = Compressed::new(
         File::new("../../../resources/Cloudkicker - 2011 07.mp3").into(),
-        Bitrate::BitsPerSecond(128_000),
+        Bitrate::Bits(128_000),
     )
     .await
     .expect("These parameters are well-defined.");
@@ -133,10 +155,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // Configure the client with your Discord bot token in the environment.
-    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
-
-    let framework = StandardFramework::new().group(&GENERAL_GROUP);
-    framework.configure(Configuration::new().prefix("~"));
+    let token =
+        Token::from_env("DISCORD_TOKEN").expect("Expected a valid token in the environment");
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
 
@@ -146,11 +166,10 @@ async fn main() {
         songbird: Arc::clone(&manager),
     };
 
-    let mut client = Client::builder(&token, intents)
-        .voice_manager::<songbird::Songbird>(manager)
-        .data(Arc::new(user_data) as _)
-        .event_handler(Handler)
-        .framework(framework)
+    let mut client = Client::builder(token, intents)
+        .voice_manager(manager)
+        .data(Arc::new(user_data))
+        .event_handler(Arc::new(Handler))
         .await
         .expect("Err creating client");
 
@@ -160,8 +179,6 @@ async fn main() {
         .map_err(|why| println!("Client ended: {:?}", why));
 }
 
-#[command]
-#[only_in(guilds)]
 async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
     let manager = &ctx.data::<UserData>().songbird;
@@ -169,7 +186,7 @@ async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
     let handler_lock = match manager.get(guild_id) {
         Some(handler) => handler,
         None => {
-            check_msg(msg.reply(ctx, "Not in a voice channel").await);
+            check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
 
             return Ok(());
         },
@@ -194,8 +211,6 @@ async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
 }
 
-#[command]
-#[only_in(guilds)]
 async fn join(ctx: &Context, msg: &Message) -> CommandResult {
     let (guild_id, channel_id) = {
         let guild = msg.guild(&ctx.cache).unwrap();
@@ -210,7 +225,7 @@ async fn join(ctx: &Context, msg: &Message) -> CommandResult {
     let connect_to = match channel_id {
         Some(channel) => channel,
         None => {
-            check_msg(msg.reply(ctx, "Not in a voice channel").await);
+            check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
 
             return Ok(());
         },
@@ -282,8 +297,6 @@ impl VoiceEventHandler for LoopPlaySound {
     }
 }
 
-#[command]
-#[only_in(guilds)]
 async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
 
@@ -301,14 +314,12 @@ async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
 
         check_msg(msg.channel_id.say(&ctx.http, "Left voice channel").await);
     } else {
-        check_msg(msg.reply(ctx, "Not in a voice channel").await);
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
     }
 
     Ok(())
 }
 
-#[command]
-#[only_in(guilds)]
 async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
     let manager = &ctx.data::<UserData>().songbird;
@@ -316,7 +327,7 @@ async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
     let handler_lock = match manager.get(guild_id) {
         Some(handler) => handler,
         None => {
-            check_msg(msg.reply(ctx, "Not in a voice channel").await);
+            check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
 
             return Ok(());
         },
@@ -341,9 +352,7 @@ async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
 }
 
-#[command]
-#[only_in(guilds)]
-async fn ting(ctx: &Context, msg: &Message, _args: Args) -> CommandResult {
+async fn ting(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
     let data = ctx.data::<UserData>();
 
@@ -370,8 +379,6 @@ async fn ting(ctx: &Context, msg: &Message, _args: Args) -> CommandResult {
     Ok(())
 }
 
-#[command]
-#[only_in(guilds)]
 async fn undeafen(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
 
@@ -399,8 +406,6 @@ async fn undeafen(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
 }
 
-#[command]
-#[only_in(guilds)]
 async fn unmute(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
     let manager = &ctx.data::<UserData>().songbird;

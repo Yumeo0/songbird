@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use songbird::{
     constants::*,
     driver::{
@@ -8,8 +8,8 @@ use songbird::{
     input::{codecs::*, Input, LiveInput, Parsed},
     test_utils as utils,
 };
-use std::io::Cursor;
-use symphonia::core::audio::{AudioBuffer, Layout, SampleBuffer, Signal, SignalSpec};
+use std::{hint::black_box, io::Cursor};
+use symphonia::core::audio::{layouts::CHANNEL_LAYOUT_STEREO, AudioBuffer, AudioSpec};
 
 pub fn mix_one_frame(c: &mut Criterion) {
     let floats = utils::make_sine(1 * STEREO_FRAME_SIZE, true);
@@ -17,12 +17,12 @@ pub fn mix_one_frame(c: &mut Criterion) {
     let symph_layout = MixMode::Stereo.into();
 
     let mut symph_mix = AudioBuffer::<f32>::new(
-        MONO_FRAME_SIZE as u64,
-        symphonia::core::audio::SignalSpec::new_with_layout(SAMPLE_RATE_RAW as u32, symph_layout),
+        AudioSpec::new(SAMPLE_RATE_RAW as u32, symph_layout),
+        MONO_FRAME_SIZE,
     );
     let mut resample_scratch = AudioBuffer::<f32>::new(
-        MONO_FRAME_SIZE as u64,
-        SignalSpec::new_with_layout(SAMPLE_RATE_RAW as u32, Layout::Stereo),
+        AudioSpec::new(SAMPLE_RATE_RAW as u32, CHANNEL_LAYOUT_STEREO),
+        MONO_FRAME_SIZE,
     );
 
     let mut group = c.benchmark_group("Stereo Target");
@@ -36,7 +36,7 @@ pub fn mix_one_frame(c: &mut Criterion) {
                     || black_box(make_src(&floats, 2, *i)),
                     |(ref mut input, ref mut local_input)| {
                         symph_mix.clear();
-                        symph_mix.render_reserved(Some(MONO_FRAME_SIZE));
+                        symph_mix.render_silence(Some(MONO_FRAME_SIZE));
                         resample_scratch.clear();
 
                         black_box(mix_logic::mix_symph_indiv(
@@ -61,7 +61,7 @@ pub fn mix_one_frame(c: &mut Criterion) {
                     || black_box(make_src(&floats, 1, *i)),
                     |(ref mut input, ref mut local_input)| {
                         symph_mix.clear();
-                        symph_mix.render_reserved(Some(MONO_FRAME_SIZE));
+                        symph_mix.render_silence(Some(MONO_FRAME_SIZE));
                         resample_scratch.clear();
 
                         black_box(mix_logic::mix_symph_indiv(

@@ -1,34 +1,24 @@
-//! Requires the "client", "standard_framework", and "voice" features be enabled
+//! Requires the "gateway", "cache", and "voice" features be enabled
 //! in your Cargo.toml, like so:
 //!
 //! ```toml
 //! [dependencies.serenity]
 //! git = "https://github.com/serenity-rs/serenity.git"
-//! features = ["client", "standard_framework", "voice"]
+//! branch = "next"
+//! features = ["gateway", "cache", "voice"]
 //! ```
-use std::{
-    env,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use dashmap::DashMap;
 
+use serenity::all::{FullEvent, Token};
 use serenity::{
     async_trait,
-    client::{Client, Context, EventHandler},
-    framework::{
-        standard::{
-            macros::{command, group},
-            Args,
-            CommandResult,
-            Configuration,
-        },
-        StandardFramework,
-    },
-    model::{channel::Message, gateway::Ready, id::ChannelId},
+    gateway::client::{Client, Context, EventHandler},
+    model::{channel::Message, id::ChannelId},
     prelude::{GatewayIntents, Mentionable},
     Result as SerenityResult,
 };
@@ -54,10 +44,42 @@ struct UserData {
 
 struct Handler;
 
+type CommandResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
 #[async_trait]
 impl EventHandler for Handler {
-    async fn ready(&self, _: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+    async fn dispatch(&self, ctx: &Context, event: &FullEvent) {
+        match event {
+            FullEvent::Ready { data_about_bot, .. } => {
+                println!("{} is connected!", data_about_bot.user.name);
+            },
+            FullEvent::Message {
+                new_message: msg, ..
+            } => {
+                if msg.author.bot() {
+                    return;
+                }
+                let Some(content) = msg.content.strip_prefix('~') else {
+                    return;
+                };
+                let (command, args) = content
+                    .split_once(char::is_whitespace)
+                    .unwrap_or((content, ""));
+                if msg.guild_id.is_none() && command != "ping" {
+                    return;
+                }
+                let result = match command {
+                    "join" => join(ctx, msg, args).await,
+                    "leave" => leave(ctx, msg).await,
+                    "ping" => ping(ctx, msg).await,
+                    _ => return,
+                };
+                if let Err(error) = result {
+                    eprintln!("Command {command} failed: {error}");
+                }
+            },
+            _ => {},
+        }
     }
 }
 
@@ -202,19 +224,13 @@ impl VoiceEventHandler for Receiver {
     }
 }
 
-#[group]
-#[commands(join, leave, ping)]
-struct General;
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
     // Configure the client with your Discord bot token in the environment.
-    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
-
-    let framework = StandardFramework::new().group(&GENERAL_GROUP);
-    framework.configure(Configuration::new().prefix("~"));
+    let token =
+        Token::from_env("DISCORD_TOKEN").expect("Expected a valid token in the environment");
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
 
@@ -229,11 +245,10 @@ async fn main() {
         songbird: Arc::clone(&manager),
     };
 
-    let mut client = Client::builder(&token, intents)
-        .voice_manager::<songbird::Songbird>(manager)
-        .data(Arc::new(data) as _)
-        .event_handler(Handler)
-        .framework(framework)
+    let mut client = Client::builder(token, intents)
+        .voice_manager(manager)
+        .data(Arc::new(data))
+        .event_handler(Arc::new(Handler))
         .await
         .expect("Err creating client");
 
@@ -243,12 +258,10 @@ async fn main() {
         .map_err(|why| println!("Client ended: {:?}", why));
 }
 
-#[command]
-#[only_in(guilds)]
-async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let Ok(connect_to) = args.single::<ChannelId>() else {
+async fn join(ctx: &Context, msg: &Message, args: &str) -> CommandResult {
+    let Ok(connect_to) = args.trim().parse::<ChannelId>() else {
         check_msg(
-            msg.reply(ctx, "Requires a valid voice channel ID be given")
+            msg.reply(&ctx.http, "Requires a valid voice channel ID be given")
                 .await,
         );
 
@@ -273,7 +286,7 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
         handler.add_global_event(CoreEvent::VoiceTick.into(), evt_receiver);
     }
 
-    if let Ok(handler_lock) = manager.join(guild_id, connect_to).await {
+    if manager.join(guild_id, connect_to).await.is_ok() {
         check_msg(
             msg.channel_id
                 .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
@@ -293,8 +306,6 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     Ok(())
 }
 
-#[command]
-#[only_in(guilds)]
 async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
     let guild_id = msg.guild_id.unwrap();
 
@@ -312,13 +323,12 @@ async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
 
         check_msg(msg.channel_id.say(&ctx.http, "Left voice channel").await);
     } else {
-        check_msg(msg.reply(ctx, "Not in a voice channel").await);
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
     }
 
     Ok(())
 }
 
-#[command]
 async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
     check_msg(msg.channel_id.say(&ctx.http, "Pong!").await);
 
